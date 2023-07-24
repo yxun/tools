@@ -60,13 +60,14 @@ docker/istio-dev/image-built-ubi9: docker/istio-dev/Dockerfile.ubi9
 		--tag "$(DEV_IMAGE_NAME)" - < docker/istio-dev/Dockerfile.ubi9
 	@touch $@
 
-# Start a dev environment Podman container in a podman machine VM from a macOS host.
-.PHONY = dev-shell-ubi9-podman-mac clean-dev-shell-ubi9-podman-mac
-dev-shell-ubi9-podman-mac: docker/istio-dev/image-built-ubi9
+# Start a dev environment Podman container in a podman machine VM.
+.PHONY = dev-shell-ubi9-podman clean-dev-shell-ubi9-podman
+dev-shell-ubi9-podman: docker/istio-dev/image-built-ubi9
 	@if test -z "$(shell podman ps -a -q -f name=$(DEV_CONTAINER_NAME))"; then \
 	    echo "starting \"$(DEV_CONTAINER_NAME)\" Podman container"; \
 		podman run --detach \
 			--name "$(DEV_CONTAINER_NAME)" \
+			--network=host \
 			--volume "/var/home/core/.kube:/home/$(USER)/.kube:cached" \
 			--volume "/var/run/user/${shell id -u}/podman/podman.sock:/var/run/docker.sock" \
 			--security-opt label=disable \
@@ -75,7 +76,7 @@ dev-shell-ubi9-podman-mac: docker/istio-dev/image-built-ubi9
 	@echo "executing shell in \"$(DEV_CONTAINER_NAME)\" Podman container"
 	@podman exec --tty --interactive "$(DEV_CONTAINER_NAME)" /bin/bash
 
-clean-dev-shell-ubi9-podman-mac:
+clean-dev-shell-ubi9-podman:
 	podman rm -f "$(DEV_CONTAINER_NAME)" || true
 	if test -n "$(shell podman images -q $(DEV_IMAGE_NAME))"; then \
 		podman rmi -f "$(shell podman images -q $(DEV_IMAGE_NAME))" || true; fi

@@ -1,6 +1,7 @@
 # Istio Development Environment in Rootless Podman
 
-This `Dockerfile.ubi9` creates a [Red Hat Universal Base Image (UBI)](https://catalog.redhat.com/software/base-images) for developing on Istio.
+This guide provides an alternative build and development environment using tools such as Podman.
+It also demonstrates steps of building an environment with a [Red Hat Universal Base Image (UBI)](https://catalog.redhat.com/software/base-images)
 
 ## Setup an Alternative Container Engine Podman from a MacOS host
 
@@ -10,27 +11,37 @@ To install `podman` engine from a MacOS host, run:
 
 ```bash
 $ brew install podman;
-$ podman machine init -v "${HOME}":"${HOME}";
+$ podman machine init;
 $ podman machine start;
-$ podman info;
 ```
 
 To expose the podman.sock on macOS, run:
 
 ```bash
 $ podman system connection list
+
 Name                         URI                                                         Identity                                Default
 podman-machine-default       ssh://core@127.0.0.1:[SSH_PORT]/run/user/[UID]/podman/podman.sock  /Users/[USER]/.ssh/podman-machine-default  true
 podman-machine-default-root  ssh://root@127.0.0.1:[SSH_PORT]/run/podman/podman.sock           /Users/[USER]/.ssh/podman-machine-default  false
+
 # replace the following 501 with your UID above.
 # replace the port 50865 with the SSH_PORT above.
 $ ssh -fnNT -L/tmp/podman.sock:/run/user/501/podman/podman.sock -i ~/.ssh/podman-machine-default ssh://core@localhost:50865 -o StreamLocalBindUnlink=yes
 $ export DOCKER_HOST='unix:///tmp//podman.sock'
 ```
 
-error : --cache-from: repository must contain neither a tag nor digest
+## Build a build-tools ubi9 image
 
-$ DOCKER_SOCKET_MOUNT="-v /var/run/user/501/podman/podman.sock:/var/run/docker.sock" HUB=localhost CONTAINER_CLI=podman BUILD_WITH_CONTAINER=0 make containers-test 
+To build a build-tools ubi9 image, run:
+
+```bash
+$ DOCKER_SOCKET_MOUNT="-v /var/run/user/501/podman/podman.sock:/var/run/docker.sock" \
+  HUB=localhost \
+  CONTAINER_CLI=podman \
+  BUILD_WITH_CONTAINER=0 \
+  DOCKER_FILE=Dockerfile.ubi9 \
+  make containers-test 
+```
 
 ## Image Configuration
 
@@ -45,7 +56,7 @@ $ DOCKER_SOCKET_MOUNT="-v /var/run/user/501/podman/podman.sock:/var/run/docker.s
     - Go directory: `$(GOPATH)` → `/home/$(USER)/go`
     - Podman socket, to access Podman from within the container:
       - [EXPERIMENTAL] In rootless mode container `/var/run/docker.sock`
-        → podman machine VM `$(XDG_RUNTIME_DIR)/podman/podman.sock` i.e. `/var/run/user/${shell id -u}/podman/podman.sock`
+        → podman machine VM `$(XDG_RUNTIME_DIR)/podman/podman.sock` i.e. `/var/run/user/$(id -u)/podman/podman.sock`
         → host `${HOME}/.local/share/containers/podman/machine/qemu/podman.sock`
       - In rootful mode container `/var/run/docker.sock` → podman machine VM `/run/podman/podman.sock`
 - The working directory is `/home/$user/go/src/istio.io/istio`.
@@ -55,8 +66,10 @@ $ DOCKER_SOCKET_MOUNT="-v /var/run/user/501/podman/podman.sock:/var/run/docker.s
 To create your dev container, run:
 
 ```bash
-$ make dev-shell-ubi9-podman-mac BUILD_WITH_CONTAINER=0
-[USER@8c1521fefe4b ~] exit
+# create .kube directory for a volume mount of dev container
+$ podman machine ssh mkdir -p /var/home/core/.kube;
+$ make dev-shell-ubi9-podman BUILD_WITH_CONTAINER=0
+[USER@8c1521fefe4b ~]
 ```
 
 The first time this target it run, a Docker image named `istio/dev:USER` is created, where USER is your local username.
@@ -65,16 +78,44 @@ Any subsequent run won't rebuild the image unless the `Dockerfile.ubi9` is modif
 The first time this target is run, a container named `istio-dev` is run with this image, and an interactive shell is executed in the container.
 Any subsequent run won't restart the container and will only start an additional interactive shell.
 
+## Build Istio and Run Tests in Container
+
+```bash
+[USER@8c1521fefe4b ~] git clone https://github.com/istio/istio.git
+[USER@8c1521fefe4b ~] cd istio
+```
+
+To build Istio:
+
+```bash
+[USER@8c1521fefe4b ~] make build BUILD_WITH_CONTAINER=0
+```
+
+To run unit tests:
+
+```bash
+[USER@8c1521fefe4b ~] go install -ldflags="-s -w" github.com/jstemmer/go-junit-report@latest
+[USER@8c1521fefe4b ~] make test BUILD_WITH_CONTAINER=0
+```
+
+When rebuilding, you may find that istio cannot find the go path,
+one simple approach is to add the go binary file to system bin/
+
+```bash
+cp /usr/local/go/bin/go /bin
+```
+
 ## Kubernetes Cluster Creation Using KIND
 
 In order to run KIND using rootless Podman, you need to have spinned up a virtual machine from `podman machine`. It spawns a virtual machine using `qemu` and connects Podman client to the given machine.
 
 Currently, it's an experimental option for KIND to run in a rootless Podman container.
-Meanwhile, you can start creating a KIND cluster in the virtual machine created by `podman machine`.
+Meanwhile, you can start creating a KIND cluster in the virtual machine created by `podman machine`. And then run Istio integration tests from the dev container since we have mounted the .kube directory.
 
 To copy KIND and kubectl from your dev container to the virtual machine, run:
 
 ```bash
+[USER@8c1521fefe4b ~] exit;
 $ podman machine ssh;
 [core@localhost ~] podman cp istio-dev:/usr/bin/kind ./kind
 [core@localhost ~] sudo mv ./kind /usr/local/bin/kind
@@ -107,53 +148,41 @@ kubeadmConfigPatches:
 EOF
 
 [core@localhost ~] chmod o+rw .kube/config
-[core@localhost ~] podman network connect kind istio-dev
 ```
-
-KIND was originally intended to run from the host, so KIND rewrites the kubeconfig to redirect the port to kubeadmin.
-This rewriting must be undone to allow connecting directly from within the container:
 
 Check that you can access the cluster:
 
 ```bash
+[core@localhost ~] kubectl get nodes
+```
+
+## Build Istio and Run Integration Tests in KinD
+
+When you have KIND cluster running, you can back to your dev container:
+
+```bash
+[core@localhost ~] exit;
+$ make dev-shell-ubi9-podman BUILD_WITH_CONTAINER=0
+# check that you can access the cluster from your dev container
 [USER@8c1521fefe4b ~] kubectl get nodes
+[USER@8c1521fefe4b ~] cd istio;
 ```
 
-## Build Istio and Run Tests in Container
+To run Istio integration tests:
 
 ```bash
-cd ~/go/src/istio.io/istio
+[USER@8c1521fefe4b ~] make test.integration.kube BUILD_WITH_CONTAINER=0
 ```
 
-To build Istio:
+## Removing The dev Container and image
 
 ```bash
-make build BUILD_WITH_CONTAINER=0
-```
-
-To run unit tests:
-
-```bash
-make test BUILD_WITH_CONTAINER=0
-```
-
-When rebuilding, you may find that istio cannot find the go path,
-one simple approach is to add the go binary file to system bin/
-
-```bash
-cp /usr/local/go/bin/go /bin
-```
-
-## Removing The Container
-
-```bash
-$ podman stop istio-dev
-$ podman rm istio-dev
+$ make clean-dev-shell-ubi9-podman BUILD_WITH_CONTAINER=0
 ```
 
 ## Troubleshooting
 
-1. docker.io/istio/dev image access denied
+- "docker.io/istio/dev image access denied"
 
 ```
 Resolving "istio/dev" using unqualified-search registries (/etc/containers/registries.conf.d/999-podman-machine.conf)
@@ -166,5 +195,6 @@ The above error was caused after rebooting a podman machine instance. The previo
 You can run the clean target and then rebuild the image.
 
 ```bash
-$ make clean-dev-shell-ubi9-podman-mac BUILD_WITH_CONTAINER=0
+$ make clean-dev-shell-ubi9-podman BUILD_WITH_CONTAINER=0
+$ make dev-shell-ubi9-podman BUILD_WITH_CONTAINER=0
 ```

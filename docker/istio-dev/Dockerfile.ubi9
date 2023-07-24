@@ -1,20 +1,10 @@
-FROM docker:20.10 as docker
-
-FROM gcr.io/istio-testing/build-tools:master-latest as build-tools
+FROM localhost/build-tools:master-latest-${TARGETARCH} as build-tools
 
 FROM registry.access.redhat.com/ubi9/ubi:9.2-696
 ARG user
 ARG group
 ARG uid=1000
 ARG gid=1000
-
-ENV PROTOC_VERSION=23.4
-ENV SHELLCHECK_VERSION=v0.9.0
-ENV HADOLINT_VERSION=v2.12.0
-ENV HUGO_VERSION=0.115.0
-ENV KIND_VERSION=v0.20.0
-ENV KUBECTL_VERSION=1.27.3
-ENV GCLOUD_VERSION=437.0.1
 
 WORKDIR /tmp
 ENV GOPATH=/tmp/go
@@ -25,14 +15,17 @@ RUN mkdir -p ${OUTDIR}/usr/local
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-#COPY --from=build-tools /usr/bin/hadolint /usr/bin/
+COPY --from=build-tools /usr/bin/hadolint /usr/bin/
 COPY --from=build-tools /usr/bin/helm /usr/bin/
-#COPY --from=build-tools /usr/bin/hugo /usr/bin/
-#COPY --from=build-tools /usr/bin/kind /usr/bin/
-#COPY --from=build-tools /usr/bin/protoc /usr/bin/
-#COPY --from=build-tools /usr/bin/shellcheck /usr/bin/
+COPY --from=build-tools /usr/bin/hugo /usr/bin/
+COPY --from=build-tools /usr/bin/docker /usr/local/bin/
+COPY --from=build-tools /usr/bin/kind /usr/bin/
+COPY --from=build-tools /usr/bin/kubectl /usr/bin/
+COPY --from=build-tools /usr/bin/protoc /usr/bin/
+COPY --from=build-tools /usr/bin/shellcheck /usr/bin/
 COPY --from=build-tools /usr/bin/yq /usr/bin/
-COPY --from=build-tools /go/ /usr/local/go/
+COPY --from=build-tools /usr/local/go /usr/local/
+COPY --from=build-tools /usr/local/google-cloud-sdk/bin/gcloud /usr/local/bin/
 COPY --from=build-tools /usr/local/ /usr/local/
 COPY --from=build-tools /node_modules/ /node_modules/
 
@@ -54,86 +47,12 @@ unzip-0:6.0-56.el9 \
 vim-enhanced-2:8.2.2637-20.el9_1 \
 wget-0:1.21.1-7.el9 \
 xz-0:5.2.5-8.el9_0 \
-golang-1.19.10-1.el9_2 \
 && dnf -y clean all
 
 # Create user and allow sudo without password.
 RUN groupadd --system --non-unique --gid $gid $group \
 && useradd --shell /sbin/nologin --uid $uid --gid $group $user \
 && echo "${user} ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/$user
-
-# Install Docker CLI.
-COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
-
-# Install KIND
-RUN go install -ldflags="-s -w" sigs.k8s.io/kind@${KIND_VERSION}
-RUN mv ${GOPATH}/bin/kind ${OUTDIR}/usr/bin/kind; chmod +x ${OUTDIR}/usr/bin/kind;
-
-# Install protoc
-RUN set -eux; \
-    \
-    case $(uname -m) in \
-        x86_64) PROTOC_ZIP=protoc-${PROTOC_VERSION}-linux-x86_64.zip;; \
-        aarch64) PROTOC_ZIP=protoc-${PROTOC_VERSION}-linux-aarch_64.zip;; \
-        *) echo "unsupported architecture"; exit 1 ;; \
-    esac; \
-    \
-    wget -nv -O "/tmp/${PROTOC_ZIP}" "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/${PROTOC_ZIP}"; \
-    unzip "/tmp/${PROTOC_ZIP}"; \
-    mv /tmp/bin/protoc ${OUTDIR}/usr/bin; \
-    chmod +x ${OUTDIR}/usr/bin/protoc
-
-# ShellCheck linter
-RUN wget -nv -O "/tmp/shellcheck-${SHELLCHECK_VERSION}.linux.$(uname -m).tar.xz" "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.$(uname -m).tar.xz"
-RUN tar -xJf "/tmp/shellcheck-${SHELLCHECK_VERSION}.linux.$(uname -m).tar.xz" -C /tmp
-RUN mv /tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck ${OUTDIR}/usr/bin
-
-# Hadolint linter
-RUN set -eux; \
-    \
-    case $(uname -m) in \
-        x86_64) HADOLINT_BINARY=hadolint-Linux-x86_64;; \
-        aarch64) HADOLINT_BINARY=hadolint-Linux-arm64;; \
-        *) echo "unsupported architecture"; exit 1 ;; \
-    esac; \
-    \
-    wget -nv -O ${OUTDIR}/usr/bin/hadolint https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/${HADOLINT_BINARY}; \
-    chmod 555 ${OUTDIR}/usr/bin/hadolint
-
-# Hugo static site generator
-RUN set -eux; \
-    \
-    case $(uname -m) in \
-        x86_64) HUGO_TAR=hugo_${HUGO_VERSION}_Linux-64bit.tar.gz;; \
-        aarch64) HUGO_TAR=hugo_${HUGO_VERSION}_Linux-ARM64.tar.gz;; \
-        *) echo "unsupported architecture"; exit 1 ;; \
-    esac; \
-    \
-    wget -nv -O /tmp/${HUGO_TAR} https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/${HUGO_TAR}; \
-    tar -xzvf /tmp/${HUGO_TAR} -C /tmp; \
-    mv /tmp/hugo ${OUTDIR}/usr/bin
-
-# Install gcloud and kubectl.
-RUN KERNEL_RELEASE=$(uname -r) \
-&& echo -e "[google-cloud-sdk]\n\
-name=Google Cloud SDK\n\
-baseurl=https://packages.cloud.google.com/yum/repos/cloud-sdk-el9-${KERNEL_RELEASE##*.}\n\
-enabled=1\n\
-gpgcheck=1\n\
-repo_gpgcheck=0\n\
-gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg\n\
-       https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg" | tee -a /etc/yum.repos.d/google-cloud-sdk.repo \
-&& echo -e "[kubernetes]\n\
-name=Kubernetes\n\
-baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-${KERNEL_RELEASE##*.}\n\
-enabled=1\n\
-gpgcheck=1\n\
-gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg\n\
-       https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg" | tee -a /etc/yum.repos.d/kubernetes.repo \
-&& dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False \
-google-cloud-sdk \
-kubectl-0:${KUBECTL_VERSION}-0 \
-&& dnf -y clean all
 
 # Install bash completion files.
 RUN /usr/bin/kind completion bash > /etc/bash_completion.d/kind \

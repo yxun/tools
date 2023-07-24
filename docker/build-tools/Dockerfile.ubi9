@@ -42,7 +42,7 @@ ENV COSIGN_VERSION=v2.1.1
 ENV CRANE_VERSION=v0.15.2
 ENV GCLOUD_VERSION=437.0.1
 ENV GCR_AUTH_VERSION=2.1.6
-ENV GH_VERSION=2.32.0
+ENV GH_VERSION=2.32.1
 ENV GOCOVMERGE_VERSION=b5bfa59ec0adc420475f97f89b58045c721d761c
 ENV GOIMPORTS_VERSION=v0.9.1
 # When updating the golangci version, you may want to update the common-files config/.golangci* files as well.
@@ -78,6 +78,7 @@ ENV YQ_VERSION=4.34.2
 
 ENV GO111MODULE=on
 ENV GOPROXY=https://proxy.golang.org
+ENV GOLANG_VERSION=1.20.6
 
 WORKDIR /tmp
 ENV GOPATH=/tmp/go
@@ -86,22 +87,39 @@ ENV OUTDIR=/out
 RUN mkdir -p ${OUTDIR}/usr/bin
 RUN mkdir -p ${OUTDIR}/usr/local
 
-# Update distro and install dependencies
+# Check installed dependencies
 # hadolint ignore=DL3008
 RUN dnf -y upgrade --refresh && dnf list --installed \
     ca-certificates \
-    curl-minimal \
     gnupg2 \
     git
 
+# Update distro and install dependencies
 # hadolint ignore=DL3008
-RUN dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False \
-    golang-1.19.10-1.el9_2 \
-    clang-0:15.0.7-2.el9 llvm-0:15.0.7-1.el9 lld-0:15.0.7-4.el9 compiler-rt-0:15.0.7-1.el9 \
+RUN dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False --allowerasing \
     make \
     unzip \
     xz \
-    wget
+    wget \
+    curl \
+    gcc \
+    gcc-c++
+
+# Currently the latest golang version is 1.19 from UBI9 base image default repo.
+# Install golang 1.20 from go.dev/dl
+# hadolint ignore=DL3008
+RUN set -eux; \
+    \
+    case $(uname -m) in \
+        x86_64) GOLANG_GZ=go${GOLANG_VERSION}.linux-amd64.tar.gz;; \
+        aarch64) GOLANG_GZ=go${GOLANG_VERSION}.linux-arm64.tar.gz;; \
+        *) echo "unsupported architecture"; exit 1 ;; \
+    esac; \
+    \
+    wget -nv -O "/tmp/${GOLANG_GZ}" "https://go.dev/dl/${GOLANG_GZ}"; \
+    tar -xzvf "/tmp/${GOLANG_GZ}" -C /tmp; \
+    mv /tmp/go /usr/local/go; \
+    ln -s /usr/local/go/bin/go /usr/local/bin/go;
 
 # Install protoc
 RUN set -eux; \
@@ -120,7 +138,7 @@ RUN set -eux; \
 # Install gh
 RUN dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
 RUN dnf -y install --setopt=install_weak_deps=False \
-    gh-${GH_VERSION}-1.${TARGETARCH}
+    gh-${GH_VERSION}-1
 RUN mv /usr/bin/gh ${OUTDIR}/usr/bin
 
 # Install protoc-gen-validate
@@ -303,15 +321,15 @@ RUN set -eux; \
     \
     case $(uname -m) in \
     x86_64) \
-    TRVIY_DEB_NAME="trivy_${TRIVY_VERSION}_Linux-64bit.deb"; \
+    TRVIY_DEB_NAME="trivy_${TRIVY_VERSION}_Linux-64bit.rpm"; \
     ;; \
     aarch64) \
-    TRVIY_DEB_NAME="trivy_${TRIVY_VERSION}_Linux-ARM64.deb"; \
+    TRVIY_DEB_NAME="trivy_${TRIVY_VERSION}_Linux-ARM64.rpm"; \
     ;; \
     *) echo "unsupported architecture"; exit 1 ;; \
     esac; \
     wget -nv -O "/tmp/${TRVIY_DEB_NAME}" "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${TRVIY_DEB_NAME}"; \
-    apt-get -y install --no-install-recommends -f "/tmp/${TRVIY_DEB_NAME}"; \
+    dnf install -y --setopt=install_weak_deps=False "/tmp/${TRVIY_DEB_NAME}"; \
     rm "/tmp/${TRVIY_DEB_NAME}"; \
     mv /usr/bin/trivy ${OUTDIR}/usr/bin/
 
@@ -336,7 +354,7 @@ RUN rm -fr /usr/local/go/bin/gofmt
 #############
 # Node.js
 #############
-FROM ubuntu:jammy as nodejs_tools_context
+FROM registry.access.redhat.com/ubi9/ubi:9.2-696 as nodejs_tools_context
 
 WORKDIR /node
 
@@ -356,7 +374,7 @@ ENV SVGSTORE_CLI_VERSION=v1.3.2
 ENV TSLINT_VERSION=v6.1.3
 ENV TYPESCRIPT_VERSION=v4.7.2
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False \
     wget ca-certificates
 
 RUN set -eux; \
@@ -399,42 +417,39 @@ RUN rm -rf /usr/local/share
 # Ruby
 #############
 
-FROM ubuntu:jammy as ruby_tools_context
-
-ENV DEBIAN_FRONTEND=noninteractive
+FROM registry.access.redhat.com/ubi9/ubi:9.2-696 as ruby_tools_context
 
 # Pinned versions of stuff we pull in
 ENV AWESOMEBOT_VERSION=1.20.0
 ENV FPM_VERSION=v1.15.1
-ENV HTMLPROOFER_VERSION=3.19.4
 ENV NOKOGIRI_VERSION=1.14.5
-ENV LICENSEE_VERSION=9.16.0
 ENV MDL_VERSION=0.12.0
 
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    apt-transport-https \
+RUN dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False \
     ca-certificates \
     gnupg2 \
-    software-properties-common \
-    build-essential \
-    zlib1g-dev \
+    make \
+    zlib-devel \
     cmake \
     pkg-config \
-    libssl-dev \
-    git
+    openssl-devel \
+    git \
+    glibc \
+    gcc \
+    gcc-c++ \
+    redhat-rpm-config
 
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ruby3.0 \
-    ruby3.0-dev
+RUN dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False \
+    ruby-0:3.0.4-160.el9_0 \
+    ruby-devel-0:3.0.4-160.el9_0
 
 # Install istio.io verification tools
 RUN gem install --no-wrappers --no-document mdl -v ${MDL_VERSION}
 RUN gem install --no-wrappers --no-document nokogiri -v ${NOKOGIRI_VERSION}
-RUN gem install --no-wrappers --no-document html-proofer -v ${HTMLPROOFER_VERSION}
 RUN gem install --no-wrappers --no-document awesome_bot -v ${AWESOMEBOT_VERSION}
-RUN gem install --no-wrappers --no-document licensee -v ${LICENSEE_VERSION}
+
 # hadolint ignore=DL3003,DL3028
 RUN mkdir fpm && \
     cd fpm && \
@@ -449,9 +464,7 @@ RUN mkdir fpm && \
 # Python
 ##############
 
-FROM ubuntu:jammy as python_context
-
-ENV DEBIAN_FRONTEND=noninteractive
+FROM registry.access.redhat.com/ubi9/ubi:9.2-696 as python_context
 
 # Pinned versions of stuff we pull in
 ENV AUTOPEP8_VERSION=2.0.2
@@ -464,13 +477,12 @@ ENV JWCRYPTO_VERSION=1.5.0
 ENV PYGITHUB_VERSION=1.58.2
 
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False --allowerasing \
     ca-certificates \
     curl \
-    libc-dev \
+    glibc \
     pkg-config \
     python3 \
-    python3-distutils \
     python3-pip \
     python3-setuptools
 
@@ -478,7 +490,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3 -m pip install --no-cache-dir --upgrade pip==${PIP_INSTALL_VERSION}
 RUN python3 -m pip install --no-cache-dir --no-binary :all: autopep8==${AUTOPEP8_VERSION}
 RUN python3 -m pip install --no-cache-dir yamllint==${YAMLLINT_VERSION}
-RUN python3 -m pip install --no-cache-dir requests==${REQUESTS_VERSION}
+RUN python3 -m pip install --no-cache-dir --ignore-installed requests==${REQUESTS_VERSION}
 RUN python3 -m pip install --no-cache-dir protobuf==${PYTHON_PROTOBUF_VERSION}
 RUN python3 -m pip install --no-cache-dir PyYAML==${PYYAML_VERSION}
 RUN python3 -m pip install --no-cache-dir jwcrypto==${JWCRYPTO_VERSION}
@@ -488,72 +500,60 @@ RUN python3 -m pip install --no-cache-dir PyGithub==${PYGITHUB_VERSION}
 # Base OS
 #############
 
-FROM ubuntu:jammy as base_os_context
+FROM registry.access.redhat.com/ubi9/ubi:9.2-696 as base_os_context
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-ENV DOCKER_VERSION=5:24.0.4-1~ubuntu.22.04~jammy
-ENV CONTAINERD_VERSION=1.6.21-1
-ENV DOCKER_BUILDX_VERSION=0.11.1-1~ubuntu.22.04~jammy
+ENV DOCKER_VERSION=3:24.0.5-1.el9
+ENV DOCKER_CLI_VERSION=1:24.0.5-1.el9
+ENV CONTAINERD_VERSION=1.6.21-3.1.el9
+ENV DOCKER_BUILDX_VERSION=0.11.2-1.el9
 ENV RUST_VERSION=1.71.0
 
 ENV OUTDIR=/out
 
-# required for binary tools: ca-certificates, gcc, libc-dev, git, iptables, libltdl7, less
-# required for general build: make, wget, curl, ssh, rpm
-# required for ruby: libcurl4-openssl-dev
+# required for binary tools: ca-certificates, gcc, glibc, git, iptables-nft, libtool-ltdl, less
+# required for general build: make, wget, curl, openssh, rpm
+# required for ruby: libcurl-devel
 # required for python: python3, pkg-config
-# required for ebpf build: clang,llvm,libbpf-dev
+# required for ebpf build: clang,llvm,libbpf
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    apt-transport-https \
+RUN dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False --allowerasing \
     ca-certificates \
     curl \
-    gnupg-agent \
-    software-properties-common \
+    gnupg2 \
     ca-certificates \
     cmake \
     cmake-data \
     gcc \
     git \
-    ssh \
-    iptables \
-    libltdl7 \
-    libc-dev \
-    libcurl4-openssl-dev \
+    openssh \
+    iptables-nft \
+    libtool-ltdl \
+    glibc \
+    libcurl-devel \
     less \
     make \
     pkg-config \
     python3 \
     python3-setuptools \
-    daemon \
     wget \
     rpm \
     jq \
-    gettext-base \
-    locales-all \
+    gettext \
     file \
-    libclang-dev \
-    iproute2 \
+    iproute \
     ipset \
     rsync \
     clang \
     llvm \
-    libbpf-dev \
+    libbpf \
     net-tools \
     ninja-build \
     sudo
 
-# Fix Docker issue
-RUN update-alternatives --set iptables /usr/sbin/iptables-legacy && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
-
 # Docker including docker-ce, docker-ce-cli, and containerd.io
-ADD https://download.docker.com/linux/ubuntu/gpg /tmp/docker-key
-RUN apt-key add /tmp/docker-key
-ARG TARGETARCH
-RUN add-apt-repository "deb [arch=${TARGETARCH}] https://download.docker.com/linux/ubuntu $(lsb_release -sc) stable"
-RUN apt-get update
-RUN apt-get -y install --no-install-recommends docker-ce="${DOCKER_VERSION}" docker-ce-cli="${DOCKER_VERSION}" containerd.io="${CONTAINERD_VERSION}" docker-buildx-plugin="${DOCKER_BUILDX_VERSION}"
+RUN dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+RUN dnf -y upgrade --refresh
+RUN dnf -y install --setopt=install_weak_deps=False docker-ce-"${DOCKER_VERSION}" docker-ce-cli-"${DOCKER_CLI_VERSION}" containerd.io-"${CONTAINERD_VERSION}" docker-buildx-plugin-"${DOCKER_BUILDX_VERSION}"
 
 ENV CARGO_HOME=/home/.cargo
 ENV RUSTUP_HOME=/home/.rustup
@@ -564,7 +564,7 @@ RUN curl --proto '=https' -v --tlsv1.2 -sSf https://sh.rustup.rs | \
     mv /home/.cargo/bin/* /usr/bin
 
 # Clean up stuff we don't need in the final image
-RUN rm -rf /var/lib/apt/lists/*
+RUN dnf -y clean all
 RUN rm -fr /usr/share/python
 RUN rm -fr /usr/share/bash-completion
 RUN rm -fr /usr/share/bug
@@ -586,7 +586,7 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 ##############
 
 # Prepare final output image
-FROM scratch as build_tools
+FROM registry.access.redhat.com/ubi9/ubi:9.2-696 as build_tools
 
 # Version from build arguments
 ARG VERSION
@@ -624,7 +624,7 @@ COPY --from=nodejs_tools_context /node/node_modules /node_modules
 COPY --from=ruby_tools_context /usr/bin /usr/bin
 COPY --from=ruby_tools_context /usr/lib /usr/lib
 COPY --from=ruby_tools_context /etc/alternatives /etc/alternatives
-COPY --from=ruby_tools_context /var/lib/gems /var/lib/gems
+COPY --from=ruby_tools_context /usr/share/gems /var/lib/gems/3.0.4
 COPY --from=ruby_tools_context /usr/local/bin /usr/local/bin
 
 COPY --from=python_context /usr/local/bin /usr/local/bin
@@ -675,14 +675,12 @@ ENTRYPOINT ["/usr/local/bin/docker-entrypoint"]
 # Clang+LLVM
 ##############
 
-FROM ubuntu:xenial AS clang_context_amd64
-FROM ubuntu:bionic AS clang_context_arm64
 # hadolint ignore=DL3006
-FROM clang_context_${TARGETARCH} AS clang_context
+FROM registry.access.redhat.com/ubi9/ubi:9.2-696 AS clang_context
 
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    xz-utils \
+RUN dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False \
+    xz \
     wget \
     ca-certificates
 
@@ -712,15 +710,15 @@ RUN set -eux; \
 # GN
 ###########
 
-FROM debian:buster AS gn_context
+FROM registry.access.redhat.com/ubi9/ubi:9.2-696 AS gn_context
 
 RUN set -eux; \
     \
-    apt-get update; \
-    apt-get install -qqy --no-install-recommends \
+    dnf -y upgrade --refresh; \
+    dnf -y install --setopt=install_weak_deps=False \
         ca-certificates git \
         clang python ninja-build \
-        libclang-dev libc++-dev \
+        llvm-toolset \
         ;
 
 WORKDIR /tmp
@@ -742,10 +740,8 @@ RUN set -eux; \
 # Bazel
 ###########
 
-FROM ubuntu:xenial AS bazel_context_amd64
-FROM ubuntu:bionic AS bazel_context_arm64
 # hadolint ignore=DL3006
-FROM bazel_context_${TARGETARCH} AS bazel_context
+FROM registry.access.redhat.com/ubi9/ubi:9.2-696 AS bazel_context
 
 ARG TARGETARCH
 
@@ -755,7 +751,7 @@ ENV BAZELISK_BIN="bazelisk-linux-${TARGETARCH}"
 ENV BAZELISK_URL="${BAZELISK_BASE_URL}/${BAZELISK_VERSION}/${BAZELISK_BIN}"
 
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False \
     wget \
     ca-certificates
 
@@ -767,12 +763,8 @@ RUN mv ${BAZELISK_BIN} /usr/local/bin/bazel
 # Final image for proxy
 ########################
 
-FROM ubuntu:xenial AS build_env_proxy_amd64
-ENV UBUNTU_RELEASE_CODE_NAME=xenial
-FROM ubuntu:bionic AS build_env_proxy_arm64
-ENV UBUNTU_RELEASE_CODE_NAME=bionic
 # hadolint ignore=DL3006
-FROM build_env_proxy_${TARGETARCH} AS build_env_proxy
+FROM registry.access.redhat.com/ubi9/ubi:9.2-696 AS build_env_proxy
 
 WORKDIR /
 
@@ -784,8 +776,9 @@ LABEL "io.istio.repo"="https://github.com/istio/tools"
 LABEL "io.istio.version"="${VERSION}"
 
 # Docker
-ENV DOCKER_VERSION=5:20.10.7~3-0~ubuntu-${UBUNTU_RELEASE_CODE_NAME}
-ENV CONTAINERD_VERSION=1.4.6-1
+ENV DOCKER_VERSION=3:24.0.5-1.el9
+ENV DOCKER_CLI_VERSION=1:24.0.5-1.el9
+ENV CONTAINERD_VERSION=1.6.21-3.1.el9
 
 # General
 ENV HOME=/home
@@ -805,42 +798,34 @@ ENV PATH=/usr/local/go/bin:/gobin:/usr/local/google-cloud-sdk/bin:$PATH
 ENV LLVM_DIRECTORY=/usr/lib/llvm
 ENV PATH=${LLVM_DIRECTORY}/bin:$PATH
 
-# Avoid interactive input when installing tshark
-ENV DEBIAN_FRONTEND=noninteractive
-
-# required for binary tools: ca-certificates, gcc, libc-dev, git, iptables, libltdl7
-# required for general build: make, wget, curl, ssh
+# required for binary tools: ca-certificates, gcc, glibc, git, iptables-nft, libtool-ltdl
+# required for general build: make, wget, curl, openssh
 # required for python: python3, pkg-config
 # hadolint ignore=DL3008, DL3009
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    apt-transport-https \
+RUN dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False --allowerasing \
     ca-certificates \
     curl \
-    gnupg-agent \
-    software-properties-common \
+    gnupg2 \
     ca-certificates \
     gcc \
-    ssh \
-    libltdl7 \
-    libc-dev \
+    openssh \
+    libtool-ltdl \
+    glibc \
     make \
     pkg-config \
     python3 \
     python3-setuptools \
-    daemon \
     wget \
     jq \
-    rsync \
-    tshark
+    rsync
 
 # Build git from source. Golang now requires a recent git version
 # hadolint ignore=DL3003,DL3009,DL4001
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libssl-dev \
-    libcurl4-gnutls-dev \
-    libexpat1-dev \
-    zlib1g-dev \
+RUN dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False \
+    openssl-devel \
+    libcurl-devel \
+    expat-devel \
+    zlib-devel \
     gettext \
     unzip && \
     wget -q https://github.com/git/git/archive/v2.39.1.zip -O git.zip && \
@@ -848,18 +833,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cd git-* && \
     make prefix=/usr/local all && \
     make prefix=/usr/local install && \
-    cd .. && rm -r git-*
+    cd .. && rm -rf git-*
 
 # Docker including docker-ce, docker-ce-cli, and containerd.io
-ADD https://download.docker.com/linux/ubuntu/gpg /tmp/docker-key
-RUN apt-key add /tmp/docker-key
-ARG TARGETARCH
-RUN add-apt-repository "deb [arch=${TARGETARCH}] https://download.docker.com/linux/ubuntu ${UBUNTU_RELEASE_CODE_NAME} stable"
-# hadolint ignore=DL3009
-RUN apt-get update && apt-get -y install --no-install-recommends \
-    docker-ce="${DOCKER_VERSION}" \
-    docker-ce-cli="${DOCKER_VERSION}" \
-    containerd.io="${CONTAINERD_VERSION}"
+RUN dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+RUN dnf -y upgrade --refresh
+RUN dnf -y install --setopt=install_weak_deps=False docker-ce-"${DOCKER_VERSION}" docker-ce-cli-"${DOCKER_CLI_VERSION}" containerd.io-"${CONTAINERD_VERSION}"
 
 # Run dockerd in CI
 COPY prow-entrypoint.sh /usr/local/bin/entrypoint
@@ -867,30 +846,20 @@ RUN chmod +x /usr/local/bin/entrypoint
 
 # CMake
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-# ubuntu 18.04 without arm64 version see https://apt.kitware.com/
-# hadolint ignore=DL4001
-RUN set -eux; \
-    \
-    case $(uname -m) in \
-        x86_64) \
-            curl -fsSL https://apt.kitware.com/keys/kitware-archive-latest.asc | apt-key add - ; \
-            apt-add-repository "deb https://apt.kitware.com/ubuntu/ ${UBUNTU_RELEASE_CODE_NAME} main"; \
-            ;; \
-        *) echo "skip" ;; \
-    esac;
 
 # binary dependencies to build envoy at v1.12.0
 # https://github.com/envoyproxy/envoy/blob/v1.12.0/bazel/README.md
 # hadolint ignore=DL3008,DL3009
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN dnf -y upgrade --refresh && dnf -y install --setopt=install_weak_deps=False \
     autoconf \
     automake \
     cmake \
     libtool \
     ninja-build \
-    python \
-    unzip \
-    virtualenv
+    python3-devel \
+    python3-pip \
+    unzip
+RUN python3 -m pip install --user virtualenv
 
 COPY --from=binary_tools_context /out/ /
 COPY --from=binary_tools_context /usr/local/go /usr/local/go
@@ -903,11 +872,6 @@ COPY --from=clang_context ${LLVM_DIRECTORY}/include ${LLVM_DIRECTORY}/include
 RUN echo "${LLVM_DIRECTORY}/lib" | tee /etc/ld.so.conf.d/llvm.conf
 RUN ldconfig
 
-COPY proxy-tsan-instrumented-libcxx.sh proxy-tsan-instrumented-libcxx.sh
-RUN ./proxy-tsan-instrumented-libcxx.sh
-
-COPY install-python-3.8.sh install-python-3.8.sh
-RUN ./install-python-3.8.sh
 
 # su-exec is used in place of complex sudo setup operations
 RUN chmod u+sx /usr/bin/su-exec
